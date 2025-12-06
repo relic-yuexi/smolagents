@@ -519,6 +519,7 @@ class Retrying:
         wait_seconds: float = 0.0,
         exponential_base: float = 2.0,
         jitter: bool = True,
+        max_wait_seconds: float = 120.0,  # Cap the maximum wait time
         retry_predicate: Callable[[BaseException], bool] | None = None,
         reraise: bool = False,
         before_sleep_logger: tuple[Logger, int] | None = None,
@@ -528,6 +529,7 @@ class Retrying:
         self.wait_seconds = wait_seconds
         self.exponential_base = exponential_base
         self.jitter = jitter
+        self.max_wait_seconds = max_wait_seconds
         self.retry_predicate = retry_predicate
         self.reraise = reraise
         self.before_sleep_logger = before_sleep_logger
@@ -576,6 +578,8 @@ class Retrying:
                 # Exponential backoff with jitter
                 # https://cookbook.openai.com/examples/how_to_handle_rate_limits#example-3-manual-backoff-implementation
                 delay *= self.exponential_base * (1 + self.jitter * random.random())
+                # Cap the delay to max_wait_seconds
+                delay = min(delay, self.max_wait_seconds)
 
                 # Log before sleeping
                 if self.before_sleep_logger:

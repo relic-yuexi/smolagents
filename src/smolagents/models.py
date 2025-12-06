@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RETRY_WAIT = 60
-RETRY_MAX_ATTEMPTS = 3
+RETRY_WAIT = 5  # Initial wait time in seconds
+RETRY_MAX_ATTEMPTS = 100  # Retry up to 100 times - don't waste tokens on Celery-level retries
 RETRY_EXPONENTIAL_BASE = 2
 RETRY_JITTER = True
 STRUCTURED_GENERATION_PROVIDERS = ["cerebras", "fireworks-ai"]
@@ -1138,7 +1138,8 @@ class ApiModel(Model):
             wait_seconds=RETRY_WAIT,
             exponential_base=RETRY_EXPONENTIAL_BASE,
             jitter=RETRY_JITTER,
-            retry_predicate=is_rate_limit_error,
+            max_wait_seconds=120.0,  # Cap at 2 minutes per retry
+            retry_predicate=is_retryable_error,
             reraise=True,
             before_sleep_logger=(logger, logging.INFO),
             after_logger=(logger, logging.INFO),
@@ -1153,15 +1154,48 @@ class ApiModel(Model):
         self.rate_limiter.throttle()
 
 
-def is_rate_limit_error(exception: BaseException) -> bool:
-    """Check if the exception is a rate limit error."""
+def is_retryable_error(exception: BaseException) -> bool:
+    """Check if the exception is a retryable error (rate limit, transient API errors, etc.)."""
     error_str = str(exception).lower()
-    return (
+    
+    # Rate limit errors
+    rate_limit_indicators = (
         "429" in error_str
         or "rate limit" in error_str
         or "too many requests" in error_str
         or "rate_limit" in error_str
     )
+    
+    # Server errors (5xx)
+    server_error_indicators = (
+        "500" in error_str  # Internal Server Error
+        or "502" in error_str  # Bad Gateway
+        or "503" in error_str  # Service Unavailable
+        or "504" in error_str  # Gateway Timeout
+        or "internal server error" in error_str
+        or "bad gateway" in error_str
+        or "service unavailable" in error_str
+        or "gateway timeout" in error_str
+    )
+    
+    # Transient API errors (JSON parsing failures, connection issues, etc.)
+    transient_error_indicators = (
+        "jsondecodeerror" in error_str
+        or "expecting value" in error_str  # JSON parse error
+        or "unable to get json response" in error_str  # LiteLLM specific
+        or "apierror" in error_str  # Generic API error
+        or "openrouterexception" in error_str  # OpenRouter specific
+        or ("connection" in error_str and ("reset" in error_str or "refused" in error_str or "timeout" in error_str))
+        or "overloaded" in error_str
+        or "temporarily unavailable" in error_str
+        or "timeout" in error_str
+    )
+    
+    return rate_limit_indicators or server_error_indicators or transient_error_indicators
+
+
+# Keep old name for backward compatibility
+is_rate_limit_error = is_retryable_error
 
 
 class LiteLLMModel(ApiModel):
